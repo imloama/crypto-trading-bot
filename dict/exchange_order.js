@@ -29,6 +29,10 @@ module.exports = class ExchangeOrder {
         return this.options.post_only && this.options.post_only === true
     }
 
+    shouldCancelOrderProcess() {
+        return ['canceled', 'rejected'].includes(this.status) && this.retry === false
+    }
+
     static createBlankRetryOrder(side) {
         return new ExchangeOrder(
             Math.round(((new Date()).getTime()).toString() * Math.random()),
@@ -59,6 +63,27 @@ module.exports = class ExchangeOrder {
             order.createdAt,
             order.updatedAt,
             order.raw,
+        )
+    }
+
+    static createCanceledFromOrder(order) {
+        let side = order.side
+        if (order.side === 'long') {
+            side = 'buy'
+        } else if(order.side === 'short') {
+            side = 'sell'
+        }
+
+        return new ExchangeOrder(
+            order.id,
+            order.symbol,
+            'canceled',
+            order.price,
+            order.amount,
+            false,
+            order.ourId,
+            side,
+            order.type,
         )
     }
 }

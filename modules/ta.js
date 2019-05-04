@@ -1,6 +1,7 @@
 let Candlestick = require('./../dict/candlestick.js');
 let ta = require('../utils/technical_analysis');
 let Ticker = require('../dict/ticker');
+let moment = require('moment');
 
 module.exports = class Ta {
     constructor(db, instances) {
@@ -35,12 +36,29 @@ module.exports = class Ta {
                                 return;
                             }
 
+                            let range = moment().subtract(24, 'hours')
+
+                            let rangeMin = moment().subtract(24, 'hours').subtract(35, 'minutes').unix()
+                            let rangeMax = moment().subtract(24, 'hours').add(35, 'minutes').unix()
+
+
+                            let dayCandle = candles.find(candle =>
+                                candle.time > rangeMin && candle.time < rangeMax
+                            )
+
+                            let change
+                            if (dayCandle) {
+                                change = 100 * (candles[0].close / dayCandle.close) - 100
+                            }
+
                             ta.getIndicatorsLookbacks(candles.slice().reverse()).then(result => {
                                 resolve({
                                     'symbol': symbol.symbol,
+                                    'exchange': symbol.exchange,
                                     'period': period,
                                     'ta': result,
                                     'ticker': new Ticker(symbol.exchange, symbol.symbol, undefined, candles[0].close, candles[0].close),
+                                    'percentage_change': change,
                                 })
                             })
                         });
@@ -59,8 +77,10 @@ module.exports = class Ta {
                     if (!x[v.symbol]) {
                         x[v.symbol] = {
                             'symbol': v.symbol,
+                            'exchange': v.exchange,
                             'ticker': v.ticker,
                             'ta': {},
+                            'percentage_change': v.percentage_change,
                         }
                     }
 

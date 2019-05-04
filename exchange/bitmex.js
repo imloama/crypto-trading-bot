@@ -226,7 +226,7 @@ module.exports = class Bitmex {
             })
 
             client.addStream(symbol['symbol'], 'instrument', (instruments) => {
-                instruments.forEach((instrument) => {
+                instruments.forEach(instrument => {
                     tickSizes[symbol['symbol']] = instrument['tickSize']
                     lotSizes[symbol['symbol']] = instrument['lotSize']
 
@@ -380,7 +380,7 @@ module.exports = class Bitmex {
     findOrderById(id) {
         return new Promise(async resolve => {
             resolve((await this.getOrders()).find(order =>
-                order.id === id
+                order.id === id || order.id == id
             ))
         })
     }
@@ -517,6 +517,13 @@ module.exports = class Bitmex {
                 logger.error('Bitmex: Invalid order update request:' + JSON.stringify({'error': error, 'body': body}))
                 reject()
 
+                return
+            }
+
+            if (result.response && (result.response.statusCode >= 400 && result.response.statusCode < 500)) {
+                logger.error('Bitmex: Invalid order created request cancel ordering:' + JSON.stringify({'body': body}))
+
+                resolve(ExchangeOrder.createCanceledFromOrder(order))
                 return
             }
 

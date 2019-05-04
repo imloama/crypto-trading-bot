@@ -261,7 +261,11 @@ module.exports = {
                     }))
                 } else if (indicatorName === 'macd') {
                     calculations.push(new Promise((resolve) => {
-                        tulind.indicators.macd.indicator([marketData.close], [12, 26, 9], (err, results) => {
+                        let fastLength = options['fast_length'] || 12
+                        let slowLength = options['slow_length'] || 26
+                        let signalLength = options['signal_length'] || 9
+
+                        tulind.indicators.macd.indicator([marketData.close], [fastLength, slowLength, signalLength], (err, results) => {
                             let result = [];
 
                             for (let i = 0; i < results[0].length; i++) {
@@ -594,6 +598,15 @@ module.exports = {
                             })
                         })
                     }))
+                } else if (indicatorName === 'adx') {
+                    let length = options['length'] || 14
+                    calculations.push(new Promise((resolve) => {
+                        tulind.indicators.adx.indicator([marketData.high, marketData.low, marketData.close], [length], function(err, results) {
+                            resolve({
+                                [indicatorKey]: results[0]
+                            })
+                        })
+                    }))
                 } else if (indicatorName === 'volume_by_price') {
                     // https://stockcharts.com/school/doku.php?id=chart_school:technical_indicators:volume_by_price
                     let length = options['length'] || 200
@@ -615,21 +628,23 @@ module.exports = {
 
                         let current = minMax[0]
                         for (let i = 0; i < ranges; i++) {
+                            // summarize volume per range
+                            let map = lookbackRange
+                                .filter(c => c.close >= current && c.close < current + rangeSize)
+                                .map(c => c.volume);
+
                             // prevent float / rounding issues on first and last item
                             rangeBlocks.push({
                                 'low': i === 0 ? current * 0.9999 : current,
                                 'high': i === ranges - 1 ? minMax[1] * 1.0001 : current + rangeSize,
-                                'volume': lookbackRange
-                                    .filter(c => c.close >= current && c.close < current + rangeSize)
-                                    .map(c => c.volume)
-                                    .reduce((x, y) => x + y)
+                                'volume': map.length > 0 ? map.reduce((x, y) => x + y) : 0
                             })
 
                             current += rangeSize
                         }
 
                         resolve({
-                            [indicatorKey]: rangeBlocks.reverse(), // sort by price; low to high
+                            [indicatorKey]: [rangeBlocks.reverse()], // sort by price; low to high
                         })
                     }))
                 }

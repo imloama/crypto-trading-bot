@@ -16,7 +16,7 @@ module.exports = class PairStateExecution {
         this.orderCalculator = orderCalculator
         this.orderExecutor = orderExecutor
         this.logger = logger
-        this.running = false
+        this.lastRunAt = undefined
 
         this.managedOrders = []
     }
@@ -49,7 +49,7 @@ module.exports = class PairStateExecution {
         }
 
         if (!hasManagedOrder) {
-            this.logger.info('Pair State: Create position open order: ' + JSON.stringify(pair.exchange))
+            this.logger.info('Pair State: Create position open order: ' + JSON.stringify([pair.exchange, pair.symbol, side, pair.options]))
 
             let order = await this.executeOrder(
                 pair.exchange,
@@ -59,7 +59,14 @@ module.exports = class PairStateExecution {
             )
 
             if (order) {
-                this.managedOrders.push(order)
+                if (order.shouldCancelOrderProcess()) {
+                    // order was canceled by exchange eg no balance or invalid amount
+                    //this.pairStateManager.clear(pair.exchange, pair.symbol)
+                    this.logger.info('Pair State: Signal canceld for invalid order: ' + JSON.stringify(pair.exchange))
+                } else {
+                    // add order to know it for later usage
+                    this.managedOrders.push(order)
+                }
             }
         }
 
@@ -136,14 +143,14 @@ module.exports = class PairStateExecution {
 
     async onPairStateExecutionTick() {
         // block ui running
-        if (this.running) {
+        if (typeof this.lastRunAt !== 'undefined' && this.lastRunAt < moment().subtract(2, 'minutes')) {
             this.logger.debug('onPairStateExecutionTick blocked for running')
             console.log('onPairStateExecutionTick blocked for running')
 
-           return
+            return
         }
 
-        this.running = true
+        this.lastRunAt = new Date()
 
         let promises = []
 
@@ -173,7 +180,7 @@ module.exports = class PairStateExecution {
             console.error(e)
         }
 
-        this.running = false
+        this.lastRunAt = undefined
     }
 
     isManagedOrder(orderId) {
@@ -181,29 +188,24 @@ module.exports = class PairStateExecution {
     }
 
     async executeOrder(exchangeName, symbol, side, options) {
-        return new Promise(async resolve => {
-            let orderSize = await this.orderCalculator.calculateOrderSize(exchangeName, symbol)
-            if (!orderSize) {
-                console.error('Invalid order size: ' + JSON.stringify([exchangeName, symbol, side]))
-                this.logger.error('Invalid order size: ' + JSON.stringify([exchangeName, symbol, side]))
+        let orderSize = await this.orderCalculator.calculateOrderSize(exchangeName, symbol)
+        if (!orderSize) {
+            console.error('Invalid order size: ' + JSON.stringify([exchangeName, symbol, side]))
+            this.logger.error('Invalid order size: ' + JSON.stringify([exchangeName, symbol, side]))
 
-                resolve()
-                return
-            }
+            return
+        }
 
-            // inverse price for short
-            if (side === 'short') {
-                orderSize = orderSize * -1
-            }
+        // inverse price for short
+        if (side === 'short') {
+            orderSize = orderSize * -1
+        }
 
-            let myOrder = options['market'] === true
-                ? Order.createMarketOrder(symbol, orderSize)
-                : Order.createLimitPostOnlyOrderAutoAdjustedPriceOrder(symbol, orderSize)
+        let myOrder = options['market'] === true
+            ? Order.createMarketOrder(symbol, orderSize)
+            : Order.createLimitPostOnlyOrderAutoAdjustedPriceOrder(symbol, orderSize)
 
-            let order = await this.orderExecutor.executeOrder(exchangeName, myOrder)
-
-            resolve(order)
-        })
+        return await this.orderExecutor.executeOrder(exchangeName, myOrder)
     }
 
     async executeCloseOrder(exchangeName, symbol, orderSize, options) {

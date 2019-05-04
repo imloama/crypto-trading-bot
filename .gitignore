@@ -4,8 +4,13 @@
 ./node_modules
 ./var/
 node_modules/
-config.json
 conf.json
 instance.js
 var/
 bot.db
+/node_modules/
+.idea/
+.vscode/
+/conf.json
+/instance.js
+/bot.db

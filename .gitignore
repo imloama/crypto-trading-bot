@@ -3,3 +3,9 @@
 ./idea
 ./node_modules
 ./var/
+node_modules/
+config.json
+conf.json
+instance.js
+var/
+bot.db

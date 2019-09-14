@@ -8,7 +8,7 @@ let crypto = require('crypto');
 let moment = require('moment');
 
 module.exports = class Http {
-    constructor(systemUtil, ta, signalHttp, backtest, exchangeManager, pairsHttp, logsHttp, candleExportHttp) {
+    constructor(systemUtil, ta, signalHttp, backtest, exchangeManager, pairsHttp, logsHttp, candleExportHttp, candleImporter) {
         this.systemUtil = systemUtil;
         this.ta = ta;
         this.signalHttp = signalHttp;
@@ -16,7 +16,8 @@ module.exports = class Http {
         this.exchangeManager = exchangeManager;
         this.pairsHttp = pairsHttp;
         this.logsHttp = logsHttp;
-        this.candleExportHttp = candleExportHttp
+        this.candleExportHttp = candleExportHttp;
+        this.candleImporter = candleImporter
     }
 
     start() {
@@ -41,6 +42,11 @@ module.exports = class Http {
             return assetVersion
         });
 
+        let desks = this.systemUtil.getConfig('desks', []).map(desk => desk.name);
+        twig.extendFunction('desks', function () {
+            return desks
+        });
+
         twig.extendFilter('format_json', function (value) {
             return JSON.stringify(value, null, '\t')
         });
@@ -52,7 +58,7 @@ module.exports = class Http {
             strict_variables: true
         });
 
-        app.use(express.urlencoded({extended: true}));
+        app.use(express.urlencoded({limit: "12mb", extended: true, parameterLimit:50000}));
         app.use(cookieParser());
         app.use(express.static(__dirname + '/../web/static'));
 
@@ -101,7 +107,9 @@ module.exports = class Http {
 
         app.get('/tradingview/:symbol', (req, res) => {
             res.render('../templates/tradingview.html.twig', {
-                symbol: req.params.symbol.replace('-', '').replace('coinbase_pro', 'coinbase'),
+                symbol: req.params.symbol.replace('-', '')
+                    .replace('coinbase_pro', 'coinbase')
+                    .toUpperCase(),
             })
         });
 
@@ -121,6 +129,14 @@ module.exports = class Http {
             res.render('../templates/logs.html.twig', await this.logsHttp.getLogsPageVariables(req, res))
         });
 
+        app.get('/desks/:desk', async (req, res) => {
+            res.render('../templates/desks.html.twig', {
+                'desk': this.systemUtil.getConfig('desks')[req.params.desk],
+                'interval': req.query.interval || undefined,
+                'id': req.params.desk,
+            })
+        });
+
         app.get('/tools/candles', async (req, res) => {
             let options = {
                 'pairs': await this.candleExportHttp.getPairs(),
@@ -138,6 +154,15 @@ module.exports = class Http {
                     new Date(req.query.end),
                 );
 
+                if (req.query.metadata) {
+                    candles.map(c => {
+                        c['exchange'] = exchange;
+                        c['symbol'] = symbol;
+                        c['period'] = req.query.period;
+                        return c
+                    })
+                }
+
                 options.start = new Date(req.query.start);
                 options.end = new Date(req.query.end);
 
@@ -149,6 +174,15 @@ module.exports = class Http {
             }
 
             res.render('../templates/candle_stick_export.html.twig', options)
+        });
+
+        app.post('/tools/candles', async (req, res) => {
+            let exchangeCandlesticks = JSON.parse(req.body.json);
+            await this.candleImporter.insertCandles(exchangeCandlesticks);
+
+            console.log('Imported: ' + exchangeCandlesticks.length + ' items');
+
+            res.redirect('/tools/candles');
         });
 
         app.post('/pairs/:pair', async (req, res) => {
@@ -177,7 +211,7 @@ module.exports = class Http {
             try {
                 await exchange.cancelOrder(id)
             } catch (e) {
-                console.log('Cancel order error: ' + JSON.stringify([exchangeName, id]))
+                console.log('Cancel order error: ' + JSON.stringify([exchangeName, id, String(e)]))
             }
 
             res.redirect('/trades')
@@ -197,7 +231,8 @@ module.exports = class Http {
                 myPositions.forEach(position => {
                     // simply converting of asset to currency value
                     let currencyValue;
-                    if (exchangeName.includes('bitmex') && ['XBTUSD', 'ETHUSD'].includes(position.symbol)) {
+                    if ((exchangeName.includes('bitmex') && ['XBTUSD', 'ETHUSD'].includes(position.symbol)) || exchangeName.includes('bybit')) {
+                        // inverse exchanges
                         currencyValue = Math.abs(position.amount)
                     } else if (position.amount && position.entry) {
                         currencyValue = position.entry * Math.abs(position.amount)

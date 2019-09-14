@@ -2,7 +2,7 @@
 
 const Gdax = require('coinbase-pro');
 
-let Candlestick = require('./../dict/candlestick');
+let ExchangeCandlestick = require('./../dict/exchange_candlestick');
 let Ticker = require('./../dict/ticker');
 let CandlestickEvent = require('./../event/candlestick_event');
 let TickerEvent = require('./../event/ticker_event');
@@ -14,11 +14,12 @@ let Order = require('../dict/order');
 let moment = require('moment');
 
 module.exports = class CoinbasePro {
-    constructor(eventEmitter, logger, candlestickResample, queue) {
+    constructor(eventEmitter, logger, candlestickResample, queue, candleImporter) {
         this.eventEmitter = eventEmitter;
         this.queue = queue;
         this.logger = logger;
         this.candlestickResample = candlestickResample;
+        this.candleImporter = candleImporter;
 
         this.client = undefined;
 
@@ -97,7 +98,10 @@ module.exports = class CoinbasePro {
                 }
 
                 let ourCandles = candles.map(candle =>
-                    new Candlestick(
+                    new ExchangeCandlestick(
+                        this.getName(),
+                        symbol['symbol'],
+                        interval,
                         candle[0],
                         candle[3],
                         candle[2],
@@ -107,7 +111,7 @@ module.exports = class CoinbasePro {
                     )
                 );
 
-                eventEmitter.emit('candlestick', new CandlestickEvent('coinbase_pro', symbol['symbol'], interval, ourCandles));
+                await this.candleImporter.insertThrottledCandles(ourCandles)
             }))
         });
 
@@ -188,7 +192,7 @@ module.exports = class CoinbasePro {
                     resamples = symbolCfg['periods']
                 }
 
-                me.onTrade(data, '1m', resamples)
+                await me.onTrade(data, '1m', resamples)
             }
         });
 
@@ -221,7 +225,7 @@ module.exports = class CoinbasePro {
      * @param period string
      * @param resamples array
      */
-    onTrade(msg, period, resamples = []) {
+    async onTrade(msg, period, resamples = []) {
         if (!msg.price || !msg.size || !msg.product_id) {
             return;
         }
@@ -281,7 +285,10 @@ module.exports = class CoinbasePro {
         for (let timestamp in this.candles[productId]) {
             let candle = this.candles[productId][timestamp];
 
-            ourCandles.push(new Candlestick(
+            ourCandles.push(new ExchangeCandlestick(
+                this.getName(),
+                msg.product_id,
+                period,
                 candle.timestamp,
                 candle.open,
                 candle.high,
@@ -291,20 +298,17 @@ module.exports = class CoinbasePro {
             ))
         }
 
-        this.eventEmitter.emit('candlestick', new CandlestickEvent('coinbase_pro', msg.product_id, period, ourCandles));
-
-        // wait for insert
-        setTimeout(async () => {
-            // resample
-            await Promise.all(resamples.filter(r => r !== periodMinutes).map(async resamplePeriod => {
-                await this.candlestickResample.resample(this.getName(), msg.product_id, period, resamplePeriod, true)
-            }))
-        }, 1000);
-
         // delete old candles
         Object.keys(this.candles[productId]).sort((a, b) => b - a).slice(200).forEach(i => {
             delete this.candles[productId][i]
         })
+
+        await this.candleImporter.insertThrottledCandles(ourCandles)
+
+        // wait for insert of previous database inserts
+        await Promise.all(resamples.filter(r => r !== periodMinutes).map(async resamplePeriod => {
+            await this.candlestickResample.resample(this.getName(), msg.product_id, period, resamplePeriod, true)
+        }))
     }
 
     getOrders() {
@@ -394,18 +398,27 @@ module.exports = class CoinbasePro {
                     continue
                 }
 
+                // coin dust: which is smaller then the allowed order size should not be shown
+                let exchangePairInfo = this.exchangePairs[pair];
+                if (exchangePairInfo && exchangePairInfo.lot_size && balanceUsed < exchangePairInfo.lot_size) {
+                    continue
+                }
+
                 let entry;
                 let createdAt = new Date();
                 let profit;
 
                 // try to find a entry price, based on trade history
-                if (this.fills[pair] && this.fills[pair][0] && this.fills[pair][0].side === 'buy') {
-                    entry = parseFloat(this.fills[pair][0].price);
-                    createdAt = new Date(this.fills[pair][0].created_at);
+                if (this.fills[pair] && this.fills[pair][0]) {
+                    let result = CoinbasePro.calculateEntryOnFills(this.fills[pair])
+                    if (result) {
+                        createdAt = new Date(result['created_at']);
+                        entry = result['average_price']
 
-                    // calculate profit based on the ticket price
-                    if (entry && this.tickers[pair]) {
-                        profit = ((this.tickers[pair].bid / entry) - 1) * 100
+                        // calculate profit based on the ticket price
+                        if (this.tickers[pair] && this.tickers[pair].bid) {
+                            profit = ((this.tickers[pair].bid / result['average_price']) - 1) * 100
+                        }
                     }
                 }
 
@@ -414,6 +427,49 @@ module.exports = class CoinbasePro {
         }
 
         return positions
+    }
+
+    static calculateEntryOnFills(fills, balance) {
+        let result = {
+            'size': 0,
+            'costs': 0,
+        };
+
+        for (let fill of fills) {
+            // stop if last fill is a sell
+            if (fill.side !== 'buy') {
+                break;
+            }
+
+            // stop if price out of range window
+            let number = result.size + parseFloat(fill.size);
+            if (number > balance * 1.15) {
+                break;
+            }
+
+            // stop on old fills
+            if (result['created_at']) {
+                let secDiff = Math.abs(new Date(fill.created_at).getTime() - new Date(result['created_at']).getTime());
+
+                // out of 7 day range
+                if (secDiff > 60 * 60 * 24 * 7 * 1000) {
+                    break;
+                }
+            }
+
+            result.size += parseFloat(fill.size);
+            result.costs += (parseFloat(fill.size) * parseFloat(fill.price)) + parseFloat(fill.fee)
+
+            result['created_at'] = fill.created_at
+        }
+
+        result['average_price'] = result.costs / result.size
+
+        if (result.size === 0 || result.costs === 0) {
+            return undefined;
+        }
+
+        return result
     }
 
     async getPositionForSymbol(symbol) {
@@ -493,30 +549,33 @@ module.exports = class CoinbasePro {
 
         // dont overwrite state closed order
         if (order.id in this.orders && ['done', 'canceled'].includes(this.orders[order.id].status)) {
+            delete this.orders[order.id]
             return
         }
 
         this.orders[order.id] = order
     }
 
-    order(order) {
-        return new Promise(async (resolve, reject) => {
-            let payload = CoinbasePro.createOrderBody(order);
-            let result = undefined;
+    async order(order) {
+        let payload = CoinbasePro.createOrderBody(order);
+        let result = undefined;
 
-            try {
-                result = await this.client.placeOrder(payload)
-            } catch (e) {
-                this.logger.error("Coinbase Pro: order create error:" + e.message);
-                reject();
-                return
+        try {
+            result = await this.client.placeOrder(payload)
+        } catch (e) {
+            this.logger.error('Coinbase Pro: order create error: ' + JSON.stringify([e.message, order, payload]));
+
+            if(e.message && (e.message.match(/HTTP\s4\d{2}/i) || e.message.toLowerCase().includes('size is too accurate') || e.message.toLowerCase().includes('size is too small') )) {
+                return ExchangeOrder.createRejectedFromOrder(order);
             }
 
-            let exchangeOrder = CoinbasePro.createOrders(result)[0];
+            return
+        }
 
-            this.triggerOrder(exchangeOrder);
-            resolve(exchangeOrder)
-        })
+        let exchangeOrder = CoinbasePro.createOrders(result)[0];
+
+        this.triggerOrder(exchangeOrder);
+        return exchangeOrder
     }
 
     async cancelOrder(id) {
@@ -603,16 +662,25 @@ module.exports = class CoinbasePro {
                 retry = true
             }
 
-            let ordType = order['type'].toLowerCase();
+            let ordType = order['type'].toLowerCase().replace(/[\W_]+/g,'');
 
             // secure the value
             let orderType = undefined;
             switch (ordType) {
                 case 'limit':
-                    orderType = 'limit';
+                    orderType = ExchangeOrder.TYPE_LIMIT
                     break;
                 case 'stop':
-                    orderType = 'stop';
+                    orderType = ExchangeOrder.TYPE_STOP
+                    break;
+                case 'market':
+                    orderType = ExchangeOrder.TYPE_MARKET
+                    break;
+                case 'stoplimit':
+                    orderType = ExchangeOrder.TYPE_STOP_LIMIT
+                    break;
+                default:
+                    orderType = ExchangeOrder.TYPE_UNKNOWN
                     break;
             }
 
@@ -663,7 +731,7 @@ module.exports = class CoinbasePro {
         pairs.forEach(pair => {
             exchangePairs[pair['id']] = {
                 'tick_size': parseFloat(pair['quote_increment']),
-                'lot_size': parseFloat(pair['quote_increment']),
+                'lot_size': parseFloat(pair['base_min_size']),
             }
         });
 

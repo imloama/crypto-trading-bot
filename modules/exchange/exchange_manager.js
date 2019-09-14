@@ -1,6 +1,7 @@
 'use strict';
 
 let _ = require('lodash')
+let ExchangePosition = require('../../dict/exchange_position')
 
 module.exports = class ExchangeManager {
     constructor(exchangesIterator, logger, instances, config) {
@@ -48,26 +49,29 @@ module.exports = class ExchangeManager {
     }
 
     async getPosition(exchangeName, symbol) {
-        return new Promise(async (resolve) => {
-            let exchange = this.get(exchangeName);
-            if (!exchange) {
-                resolve()
-                return;
-            }
+        return this.get(exchangeName).getPositionForSymbol(symbol);
+    }
 
-            resolve(await exchange.getPositionForSymbol(symbol))
-        })
+    async getPositions() {
+        let positions = []
+
+        for (let exchange of this.all()) {
+            let exchangeName = exchange.getName();
+
+            let exchangePositions = (await exchange.getPositions())
+                .map(pos => new ExchangePosition(exchangeName, pos))
+
+            positions.push(...exchangePositions)
+        }
+
+        return positions
     }
 
     async getOrders(exchangeName, symbol) {
-        return new Promise(async (resolve) => {
-            let exchange = this.get(exchangeName);
-            if (!exchange) {
-                resolve([])
-                return
-            }
+        return this.get(exchangeName).getOrdersForSymbol(symbol)
+    }
 
-            resolve(await exchange.getOrdersForSymbol(symbol))
-        })
+    async findOrderById(exchangeName, id) {
+        return this.get(exchangeName).findOrderById(id)
     }
 }

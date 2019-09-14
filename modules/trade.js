@@ -1,8 +1,9 @@
 'use strict';
 
-var moment = require('moment');
+const moment = require('moment');
 const crypto = require('crypto');
 const os = require('os');
+const PositionStateChangeEvent = require('../event/position_state_change_event')
 
 module.exports = class Trade {
     constructor(
@@ -12,18 +13,15 @@ module.exports = class Trade {
         logger,
         createOrderListener,
         tickListener,
-        candleStickListener,
         tickers,
-        candleStickLogListener,
         tickerDatabaseListener,
-        tickerLogListener,
-        signalListener,
         exchangeOrderWatchdogListener,
         orderExecutor,
         pairStateExecution,
         systemUtil,
         logsRepository,
         tickerLogRepository,
+        exchangePositionWatcher
     ) {
         this.eventEmitter = eventEmitter
         this.instances = instances
@@ -31,18 +29,15 @@ module.exports = class Trade {
         this.logger = logger
         this.createOrderListener = createOrderListener
         this.tickListener = tickListener
-        this.candleStickListener = candleStickListener
         this.tickers = tickers
-        this.candleStickLogListener = candleStickLogListener
         this.tickerDatabaseListener = tickerDatabaseListener
-        this.tickerLogListener = tickerLogListener
-        this.signalListener = signalListener
         this.exchangeOrderWatchdogListener = exchangeOrderWatchdogListener
         this.orderExecutor = orderExecutor
         this.pairStateExecution = pairStateExecution
         this.systemUtil = systemUtil
         this.logsRepository = logsRepository
         this.tickerLogRepository = tickerLogRepository
+        this.exchangePositionWatcher = exchangePositionWatcher
     }
 
     start() {
@@ -110,27 +105,11 @@ module.exports = class Trade {
         eventEmitter.on('ticker', async function(tickerEvent) {
             tickers.set(tickerEvent.ticker)
             me.tickerDatabaseListener.onTicker(tickerEvent)
-
-            // dont save for now; too many data
-            // me.tickerLogListener.onTicker(tickerEvent)
         });
 
         eventEmitter.on('orderbook', function(orderbookEvent) {
             //console.log(orderbookEvent.orderbook)
         });
-
-        eventEmitter.on('exchange_order', function(exchangeOrderEvent) {
-            console.log('exchangeOrderEvent: ' + JSON.stringify(exchangeOrderEvent))
-        });
-
-        eventEmitter.on('exchange_orders', function(exchangeOrderEvent) {
-            console.log('exchange_orders: ' + JSON.stringify(exchangeOrderEvent))
-        });
-
-        eventEmitter.on('candlestick', async (event) => {
-            me.candleStickListener.onCandleStick(event)
-            // me.candleStickLogListener.onCandleStick(event)
-        })
 
         eventEmitter.on('order', async (event) => me.createOrderListener.onCreateOrder(event))
 
@@ -140,9 +119,12 @@ module.exports = class Trade {
 
         eventEmitter.on('watchdog', async () => {
             me.exchangeOrderWatchdogListener.onTick()
+            await me.exchangePositionWatcher.onPositionStateChangeTick()
         })
 
-        eventEmitter.on('signal_tick', async () => me.signalListener.onSignalTick())
+        eventEmitter.on(PositionStateChangeEvent.EVENT_NAME, async event => {
+            await me.exchangeOrderWatchdogListener.onPositionChanged(event)
+        })
 
         let running = undefined
         eventEmitter.on('tick_ordering', async () => {

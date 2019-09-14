@@ -12,17 +12,14 @@ let Telegram = require('../notify/telegram');
 
 let Tickers = require('../storage/tickers');
 
-let CandleStickListener = require('../modules/listener/candle_stick_listener');
 let TickListener = require('../modules/listener/tick_listener');
 let CreateOrderListener = require('../modules/listener/create_order_listener');
-let CandleStickLogListener = require('../modules/listener/candle_stick_log_listener');
 let TickerDatabaseListener = require('../modules/listener/ticker_database_listener');
-let TickerLogListener = require('../modules/listener/ticker_log_listener');
 let ExchangeOrderWatchdogListener = require('../modules/listener/exchange_order_watchdog_listener');
+let ExchangePositionWatcher = require('../modules/exchange/exchange_position_watcher');
 
 let SignalLogger = require('../modules/signal/signal_logger');
 let SignalHttp = require('../modules/signal/signal_http');
-let SignalListener = require('../modules/signal/signal_listener');
 
 let SignalRepository = require('../modules/repository/signal_repository');
 let CandlestickRepository = require('../modules/repository/candlestick_repository');
@@ -47,6 +44,7 @@ let WinstonSqliteTransport = require('../utils/winston_sqlite_transport');
 let LogsHttp = require('./system/logs_http');
 let LogsRepository = require('../modules/repository/logs_repository');
 let TickerLogRepository = require('../modules/repository/ticker_log_repository');
+let TickerRepository = require('../modules/repository/ticker_repository');
 let CandlestickResample = require('../modules/system/candlestick_resample');
 let RequestClient = require('../utils/request_client');
 let Queue = require('../utils/queue');
@@ -57,6 +55,8 @@ let Binance = require('../exchange/binance');
 let Bitfinex = require('../exchange/bitfinex');
 let CoinbasePro = require('../exchange/coinbase_pro');
 let Noop = require('../exchange/noop');
+let Bybit = require('../exchange/bybit');
+
 let ExchangeCandleCombine = require('../modules/exchange/exchange_candle_combine');
 let CandleExportHttp = require('../modules/system/candle_export_http');
 let CandleImporter = require('../modules/system/candle_importer');
@@ -73,18 +73,14 @@ let notify = undefined;
 let tickers = undefined;
 let queue = undefined;
 
-let candleStickListener = undefined;
 let candleStickImporter = undefined;
-let candleStickLogListener = undefined;
 let tickerDatabaseListener = undefined;
-let tickerLogListener = undefined;
 let tickListener = undefined;
 let createOrderListener = undefined;
 let exchangeOrderWatchdogListener = undefined;
 
 let signalLogger = undefined;
 let signalHttp = undefined;
-let signalListener = undefined;
 
 let signalRepository = undefined;
 let candlestickRepository = undefined;
@@ -111,6 +107,8 @@ let exchanges = undefined;
 let requestClient = undefined;
 let exchangeCandleCombine = undefined;
 let candleExportHttp = undefined;
+let exchangePositionWatcher = undefined;
+let tickerRepository = undefined;
 
 module.exports = {
     boot: async function () {
@@ -143,8 +141,11 @@ module.exports = {
             return db;
         }
 
-        let myDb = new TransactionDatabase(new sqlite3.Database('bot.db'));
-        myDb.configure("busyTimeout", 4000);
+        let myDb = require('better-sqlite3')('bot.db');
+        myDb.pragma('journal_mode = WAL');
+
+        myDb.pragma('SYNCHRONOUS = 1;');
+        myDb.pragma('LOCKING_MODE = EXCLUSIVE;');
 
         return db = myDb
     },
@@ -155,7 +156,7 @@ module.exports = {
         }
 
         let Ta = require('../modules/ta.js');
-        return ta = new Ta(this.getDatabase(), this.getInstances())
+        return ta = new Ta(this.getCandlestickRepository(), this.getInstances(), this.getTickers())
     },
 
     getBacktest: function () {
@@ -184,16 +185,6 @@ module.exports = {
         }
 
         return riskRewardRatioCalculator = new RiskRewardRatioCalculator(this.getLogger())
-    },
-
-    getCandleStickListener: function () {
-        if (candleStickListener) {
-            return candleStickListener;
-        }
-
-        return candleStickListener = new CandleStickListener(
-            this.getCandleImporter(),
-        )
     },
 
     getCandleImporter: function () {
@@ -249,28 +240,12 @@ module.exports = {
         )
     },
 
-    getCandleStickLogListener: function () {
-        if (candleStickLogListener) {
-            return candleStickLogListener
-        }
-
-        return candleStickLogListener = new CandleStickLogListener(this.getDatabase(), this.getLogger())
-    },
-
     getTickerDatabaseListener: function () {
         if (tickerDatabaseListener) {
             return tickerDatabaseListener
         }
 
-        return tickerDatabaseListener = new TickerDatabaseListener(this.getDatabase(), this.getLogger())
-    },
-
-    getTickerLogListener: function () {
-        if (tickerLogListener) {
-            return tickerLogListener
-        }
-
-        return tickerLogListener = new TickerLogListener(this.getDatabase(), this.getLogger())
+        return tickerDatabaseListener = new TickerDatabaseListener(this.getTickerRepository())
     },
 
     getSignalLogger: function () {
@@ -278,7 +253,7 @@ module.exports = {
             return signalLogger
         }
 
-        return signalLogger = new SignalLogger(this.getDatabase(), this.getLogger())
+        return signalLogger = new SignalLogger(this.getSignalRepository())
     },
 
     getSignalHttp: function () {
@@ -286,20 +261,7 @@ module.exports = {
             return signalHttp
         }
 
-        return signalHttp = new SignalHttp(this.getDatabase())
-    },
-
-    getSignalListener: function () {
-        if (signalListener) {
-            return signalListener
-        }
-
-        return signalListener = new SignalListener(
-            this.getSignalRepository(),
-            this.getInstances(),
-            this.getTickers(),
-            this.getEventEmitter(),
-        )
+        return signalHttp = new SignalHttp(this.getSignalRepository())
     },
 
     getSignalRepository: function () {
@@ -307,7 +269,7 @@ module.exports = {
             return signalRepository
         }
 
-        return signalListener = new SignalRepository(
+        return signalRepository = new SignalRepository(
             this.getDatabase(),
         )
     },
@@ -327,9 +289,7 @@ module.exports = {
             return eventEmitter;
         }
 
-        eventEmitter = new events.EventEmitter();
-        eventEmitter.setMaxListeners(0); // turn off limits by default
-        return eventEmitter;
+        return eventEmitter = new events.EventEmitter();
     },
 
     getLogger: function () {
@@ -364,11 +324,13 @@ module.exports = {
 
         let config = this.getConfig();
 
-        if (_.has(config, 'notify.slack')) {
-            notifiers.push(new Slack(config.notify.slack))
+        let slack = _.get(config, 'notify.slack');
+        if (slack && slack.webhook && slack.webhook.length > 0) {
+            notifiers.push(new Slack(slack))
         }
 
-        if (_.has(config, 'notify.mail.username')) {
+        let mailServer = _.get(config, 'notify.mail.server');
+        if (mailServer && mailServer.length > 0) {
             notifiers.push(new Mail(
                 this.createMailer(),
                 this.getSystemUtil(),
@@ -376,10 +338,11 @@ module.exports = {
             ))
         }
 
-        if (_.has(config, 'notify.telegram')) {
+        let telegram = _.get(config, 'notify.telegram');
+        if (telegram && telegram.length > 0) {
             notifiers.push(new Telegram(
                 this.createTelegram(),
-                config.notify.telegram,
+                telegram,
                 this.getLogger(),
             ))
         }
@@ -417,12 +380,7 @@ module.exports = {
             this.getHttpPairs(),
             this.getLogsHttp(),
             this.getCandleExportHttp(),
-        )
-    },
-
-    createBackfillInstance: function () {
-        return new Backfill(
-            this.getExchangeManager(),
+            this.getCandleImporter(),
         )
     },
 
@@ -449,6 +407,7 @@ module.exports = {
             this.getTickers(),
             this.getSystemUtil(),
             this.getLogger(),
+            this.getPairStateManager(),
         )
     },
 
@@ -474,6 +433,7 @@ module.exports = {
             this.getInstances(),
             this.getExchangeManager(),
             this.getPairStateManager(),
+            this.getEventEmitter(),
         )
     },
 
@@ -543,6 +503,14 @@ module.exports = {
         return tickerLogRepository = new TickerLogRepository(this.getDatabase())
     },
 
+    getTickerRepository: function () {
+        if (tickerRepository) {
+            return tickerRepository;
+        }
+
+        return tickerRepository = new TickerRepository(this.getDatabase(), this.getLogger())
+    },
+
     getCandlestickResample: function () {
         if (candlestickResample) {
             return candlestickResample;
@@ -550,7 +518,7 @@ module.exports = {
 
         return candlestickResample = new CandlestickResample(
             this.getCandlestickRepository(),
-            this.getEventEmitter(),
+            this.getCandleImporter(),
         )
     },
 
@@ -592,6 +560,18 @@ module.exports = {
         )
     },
 
+    getExchangePositionWatcher: function () {
+        if (exchangePositionWatcher) {
+            return exchangePositionWatcher
+        }
+
+        return exchangePositionWatcher = new ExchangePositionWatcher(
+            this.getExchangeManager(),
+            this.getEventEmitter(),
+            this.getLogger(),
+        )
+    },
+
     getExchanges: function () {
         if (exchanges) {
             return exchanges;
@@ -602,13 +582,17 @@ module.exports = {
                 this.getEventEmitter(),
                 this.getRequestClient(),
                 this.getCandlestickResample(),
-                this.getLogger()
+                this.getLogger(),
+                this.getQueue(),
+                this.getCandleImporter(),
             ),
             new BitmexTestnet(
                 this.getEventEmitter(),
                 this.getRequestClient(),
                 this.getCandlestickResample(),
-                this.getLogger()
+                this.getLogger(),
+                this.getQueue(),
+                this.getCandleImporter(),
             ),
             new Binance(
                 this.getEventEmitter(),
@@ -621,11 +605,21 @@ module.exports = {
                 this.getLogger(),
                 this.getCandlestickResample(),
                 this.getQueue(),
+                this.getCandleImporter(),
             ),
             new Bitfinex(
                 this.getEventEmitter(),
                 this.getLogger(),
                 this.getRequestClient(),
+                this.getCandleImporter(),
+            ),
+            new Bybit(
+                this.getEventEmitter(),
+                this.getRequestClient(),
+                this.getCandlestickResample(),
+                this.getLogger(),
+                this.getQueue(),
+                this.getCandleImporter(),
             ),
             new Noop(),
         ]
@@ -641,25 +635,22 @@ module.exports = {
             this.getLogger(),
             this.getCreateOrderListener(),
             this.getTickListener(),
-            this.getCandleStickListener(),
             this.getTickers(),
-            this.getCandleStickLogListener(),
             this.getTickerDatabaseListener(),
-            this.getTickerLogListener(),
-            this.getSignalListener(),
             this.getExchangeOrderWatchdogListener(),
             this.getOrderExecutor(),
             this.getPairStateExecution(),
             this.getSystemUtil(),
             this.getLogsRepository(),
             this.getTickerLogRepository(),
+            this.getExchangePositionWatcher(),
         )
     },
 
     getBackfill: function () {
         return new Backfill(
             this.getExchanges(),
-            this.getCandleStickListener(),
+            this.getCandleImporter(),
         )
     },
 
@@ -678,8 +669,9 @@ module.exports = {
         const Telegraf = require('telegraf');
         const config = this.getConfig();
         const token = config.notify.telegram.token;
+
         if (!token) {
-            this.logger.error('Telegram: No api token given');
+            console.log('Telegram: No api token given');
             return
         }
 

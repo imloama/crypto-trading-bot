@@ -1,6 +1,7 @@
 let assert = require('assert');
 let Bitfinex = require('../../exchange/bitfinex');
 let OurOrder = require('../../dict/order');
+let ExchangeOrder = require('../../dict/exchange_order');
 let Ticker = require('../../dict/ticker');
 const { Position, Order } = require('bfx-api-node-models')
 
@@ -37,6 +38,8 @@ describe('#bitfinex exchange implementation', function() {
         assert.equal(orders[0].type, 'limit')
         assert.equal(orders[0].createdAt.toISOString(), '2018-10-19T19:31:40.939Z')
         assert.equal(orders[0].updatedAt instanceof Date, true)
+
+        assert.equal(orders[0].raw.status, 'ACTIVE')
     })
 
     it('test that symbol sizes are provided', async () => {
@@ -365,7 +368,60 @@ describe('#bitfinex exchange implementation', function() {
         assert.deepStrictEqual(myChanges, {'id': 12345, 'price': '12'})
     })
 
+    it('test orders are canceled', async () => {
+        let bitfinex = new Bitfinex()
+
+        bitfinex.orders = {
+            25035356: new ExchangeOrder(25035356, 'FOOUSD', 'open', undefined, undefined, undefined, undefined, 'buy', ExchangeOrder.TYPE_LIMIT),
+            55555: new ExchangeOrder('55555', 'FOOUSD', 'open', undefined, undefined, undefined, undefined, 'buy', ExchangeOrder.TYPE_LIMIT),
+        };
+
+        let cancelIds = []
+        bitfinex.client = {
+            'cancelOrder': async id => {
+                cancelIds.push(id)
+                return undefined;
+            },
+        }
+
+        let exchangeOrder = await bitfinex.cancelAll('FOOUSD')
+
+        assert.strictEqual(exchangeOrder.find(o => o.id == 25035356).id, 25035356)
+        assert.strictEqual(exchangeOrder.find(o => o.id == 55555).id, '55555')
+
+        assert.strictEqual(Object.keys(bitfinex.orders).length, 0)
+
+        assert.strictEqual(cancelIds.includes(25035356), true)
+        assert.strictEqual(cancelIds.includes(55555), true)
+    })
+
+    it('test orders that a single order can be canceled', async () => {
+        let bitfinex = new Bitfinex()
+
+        bitfinex.orders = {
+            25035356: new ExchangeOrder(25035356, 'FOOUSD', 'open', undefined, undefined, undefined, undefined, 'buy', ExchangeOrder.TYPE_LIMIT),
+            55555: new ExchangeOrder(55555, 'FOOUSD', 'open', undefined, undefined, undefined, undefined, 'buy', ExchangeOrder.TYPE_LIMIT),
+        };
+
+        let cancelIds = []
+        bitfinex.client = {
+            'cancelOrder': async id => {
+                cancelIds.push(id)
+                return undefined;
+            },
+        }
+
+        await bitfinex.cancelOrder(55555)
+        assert.strictEqual(cancelIds.includes(55555), true)
+
+        await bitfinex.cancelOrder('25035356')
+        assert.strictEqual(cancelIds.includes(25035356), true)
+    })
+
     let createResponse = function(filename) {
-        return JSON.parse(fs.readFileSync(__dirname + '/bitfinex/' + filename, 'utf8'));
+        return JSON.parse(fs.readFileSync(__dirname + '/bitfinex/' + filename, 'utf8')).map(item => {
+            item['_fieldKeys'] = ['status'] // fake magic object of lib
+            return item
+        });
     }
 });

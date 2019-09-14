@@ -2,9 +2,9 @@
 
 const BFX = require('bitfinex-api-node')
 
-let Candlestick = require('./../dict/candlestick.js');
-let Ticker = require('./../dict/ticker.js');
-let Position = require('../dict/position.js');
+let ExchangeCandlestick = require('./../dict/exchange_candlestick');
+let Ticker = require('./../dict/ticker');
+let Position = require('../dict/position');
 
 let CandlestickEvent = require('./../event/candlestick_event.js');
 let TickerEvent = require('./../event/ticker_event.js');
@@ -15,8 +15,9 @@ const { Order } = require('bfx-api-node-models')
 let moment = require('moment')
 
 module.exports = class Bitfinex {
-    constructor(eventEmitter, logger, requestClient) {
+    constructor(eventEmitter, logger, requestClient, candleImport) {
         this.eventEmitter = eventEmitter
+        this.candleImport = candleImport
         this.logger = logger
         this.positions = {}
         this.orders = []
@@ -54,7 +55,7 @@ module.exports = class Bitfinex {
         this.exchangePairs = {}
 
         ws.on('error', err => {
-            myLogger.error('Bitfinex: error: ' + String(err))
+            myLogger.error('Bitfinex: error: ' + JSON.stringify(err))
         })
 
         ws.on('close', () => {
@@ -98,7 +99,7 @@ module.exports = class Bitfinex {
             ));
         })
 
-        ws.on('candle', (candles, pair) => {
+        ws.on('candle', async (candles, pair) => {
             let options = pair.split(':');
 
             let period = options[1].toLowerCase();
@@ -121,7 +122,10 @@ module.exports = class Bitfinex {
             let sticks = myCandles.filter(function (candle) {
                 return typeof candle['mts'] !== 'undefined';
             }).map(function(candle) {
-                return new Candlestick(
+                return new ExchangeCandlestick(
+                    'bitfinex',
+                    mySymbol,
+                    period.toLowerCase(),
                     Math.round(candle['mts'] / 1000),
                     candle['open'],
                     candle['high'],
@@ -136,7 +140,7 @@ module.exports = class Bitfinex {
                 return;
             }
 
-            eventEmitter.emit('candlestick', new CandlestickEvent('bitfinex', mySymbol, period.toLowerCase(), sticks));
+            await this.candleImport.insertThrottledCandles(sticks)
         })
 
         let me = this
@@ -370,6 +374,12 @@ module.exports = class Bitfinex {
             return
         }
 
+        // external lib does not support string as id; must be int
+        // is failing in a timeout
+        if (typeof id === 'string' && id.match(/^\d+$/)) {
+            id = parseInt(id);
+        }
+
         let result
         try {
             result = await this.client.cancelOrder(id)
@@ -383,12 +393,10 @@ module.exports = class Bitfinex {
         return ExchangeOrder.createCanceled(order)
     }
 
-    findOrderById(id) {
-        return new Promise(async resolve => {
-            resolve((await this.getOrders()).find(order =>
-                order.id === id || order.id == id
-            ))
-        })
+    async findOrderById(id) {
+        return (await this.getOrders()).find(order =>
+            order.id === id || order.id == id
+        )
     }
 
     async cancelAll(symbol) {
@@ -411,7 +419,7 @@ module.exports = class Bitfinex {
                 'Accept': 'application/json',
             },
         }, result => {
-            return result.response.statusCode >= 500
+            return result.response && result.response.statusCode >= 500
         })
 
         let exchangePairs = {}
@@ -453,6 +461,7 @@ module.exports = class Bitfinex {
 
         // dont overwrite state closed order
         if (order.id in this.orders && ['done', 'canceled'].includes(this.orders[order.id].status)) {
+            delete this.orders[order.id]
             return
         }
 
@@ -483,13 +492,29 @@ module.exports = class Bitfinex {
         let price_avg = order['price_avg']
 
         let orderType = undefined
-        switch (order.type.toLowerCase()) {
+        switch (order.type.toLowerCase().replace(/[\W_]+/g,'')) {
             case 'limit':
-                orderType = 'limit'
+                orderType = ExchangeOrder.TYPE_LIMIT
                 break;
             case 'stop':
-                orderType = 'stop'
+                orderType = ExchangeOrder.TYPE_STOP
                 break;
+            case 'market':
+                orderType = ExchangeOrder.TYPE_MARKET
+                break;
+            case 'stoplimit':
+                orderType = ExchangeOrder.TYPE_STOP_LIMIT
+                break;
+            default:
+                orderType = ExchangeOrder.TYPE_UNKNOWN
+                break;
+        }
+
+        let orderValues = {}
+        if (order['_fieldKeys']) {
+            order['_fieldKeys'].map(k => {
+                orderValues[k] = order[k];
+            })
         }
 
         return new ExchangeOrder(
@@ -504,6 +529,7 @@ module.exports = class Bitfinex {
             orderType,
             new Date(order['mtsUpdate']),
             new Date(),
+            orderValues
         )
     }
 

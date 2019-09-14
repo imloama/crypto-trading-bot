@@ -26,7 +26,8 @@ As most trading bots just provide basic buy and sell signals they provide many s
  * [Binance](https://www.binance.com/?ref=17569916)
  * [Coinbase Pro](https://www.coinbase.com/join/5a2ae60e76531100d3af2ee5)
  * [Bitfinex](https://www.bitfinex.com) (margin wallet)
- 
+ * [Bybit](https://www.bybit.com/app/register?ref=46AK7) with leverage configuration (Limitation on stops via websocket order; only updated once per minute)
+  
 TODOS:
 
  * [Huobi Global](https://www.hbg.com/) (margin) 
@@ -45,10 +46,25 @@ TODOS:
  
 ## How to use
 
-Install packages
+
+### [optional] Preinstall
+
+The tulip library is used for indicators; which sometimes is having some issues on `npm install` because of code compiling:
+
+Install build tools
 
 ```
-npm install
+sudo apt-get install build-essential
+```
+
+Also the build from source is not supporting all nodejs version. It looks like versions <= 10 are working. You can use nodejs 12 if you compiled it once via older version.
+
+
+### Install packages
+
+```
+➜ npm install --production
+➜ npm run postinstall
 ```
 
 Create instance file for pairs and changes
@@ -63,10 +79,8 @@ Provide a configuration with your exchange credentials
 cp conf.json.dist conf.json
 ```
 
-Create a new sqlite data base
-
+Create a new sqlite database use bot.sql scheme to create the tables
 ```
-# use bot.sql scheme to create the tables
 sqlite3 bot.db < bot.sql
 ```
 
@@ -76,9 +90,20 @@ Lets start it
 node index.js trade
 ```
 
+## How to use: Docker
+
+For initialize the configuration once
+
+```
+➜ cp instance.js.dist instance.js && cp conf.json.dist conf.json && sqlite3 bot.db < bot.sql
+➜ docker-compose build
+➜ docker-compose up -d
+```
+After this you can use `docker-compose` which will give you a running bot via <http://127.0.0.1:8080>
+
 #### Setting Up Telegram Bot
 First, you'll need to create a bot for Telegram. Just talk to [BotFather](https://telegram.me/botfather) and follow simple steps until it gives you a token for it.
-You'll also need to create a Telegram group, the place where you and BitProphet will communicate. After creating it, add the bot as administrator (make sure to uncheck "All Members Are Admins").
+You'll also need to create a Telegram group, the place where you and crypto-trading-bot will communicate. After creating it, add the bot as administrator (make sure to uncheck "All Members Are Admins").
 
 ##### Retrieving Chat IDs
 Invite ```@RawDataBot``` to your group and get your group id in sended chat id field
@@ -209,6 +234,28 @@ You should only provide one of them, first wins.
             'currency_capital': 50,  // this will use 50 EUR and buys the equal amount of BTC (example: BTC price 3000 use 50 EUR. will result in 0.016 BTC)
         },
     })
+```
+
+### Margin / Leverage
+
+Per pair you can set used margin before orders are created; depending on exchange
+
+```
+    c.symbols.push({
+        'symbol': 'BTCUSD',
+        'exchange': 'bitmex',
+        'extra': {
+            'bitmex_leverage': 5,
+        },
+    })
+    
+    c.symbols.push({
+        'symbol': 'EOSUSD',
+        'exchange': 'bybit',
+        'extra': {
+            'bybit_leverage': 5,
+        },
+    })    
 ```
 
 ## Signals

@@ -3,6 +3,7 @@
 let Candlestick = require('./../dict/candlestick')
 let Ticker = require('./../dict/ticker')
 let Orderbook = require('./../dict/orderbook')
+let ExchangeCandlestick = require('../dict/exchange_candlestick')
 
 let CandlestickEvent = require('./../event/candlestick_event')
 let TickerEvent = require('./../event/ticker_event')
@@ -23,11 +24,13 @@ let _ = require('lodash')
 const querystring = require('querystring');
 
 module.exports = class Bitmex {
-    constructor(eventEmitter, requestClient, candlestickResample, logger) {
+    constructor(eventEmitter, requestClient, candlestickResample, logger, queue, candleImporter) {
         this.eventEmitter = eventEmitter
         this.requestClient = requestClient
         this.candlestickResample = candlestickResample
         this.logger = logger
+        this.queue = queue
+        this.candleImporter = candleImporter
 
         this.apiKey = undefined
         this.apiSecret = undefined
@@ -155,53 +158,60 @@ module.exports = class Bitmex {
             myPeriods = Array.from(new Set(myPeriods))
 
             myPeriods.forEach(period => {
-                request(me.getBaseUrl() + '/api/v1/trade/bucketed?binSize=' + period + '&partial=false&symbol=' + symbol['symbol'] + '&count=500&reverse=true', { json: true }, (err, res, body) => {
-                    if (err) {
-                        console.log('Bitmex: Candle backfill error: ' + String(err))
-                        logger.error('Bitmex: Candle backfill error: ' + String(err))
-                        return
-                    }
+                // for bot init prefill data: load latest candles from api
+                this.queue.add(() => {
+                    request(me.getBaseUrl() + '/api/v1/trade/bucketed?binSize=' + period + '&partial=false&symbol=' + symbol['symbol'] + '&count=750&reverse=true', { json: true }, async (err, res, body) => {
+                        if (err) {
+                            console.log('Bitmex: Candle backfill error: ' + String(err))
+                            logger.error('Bitmex: Candle backfill error: ' + String(err))
+                            return
+                        }
 
-                    if(!Array.isArray(body)) {
-                        console.log('Bitmex: Candle backfill error: ' + JSON.stringify(body));
-                        logger.error('Bitmex Candle backfill error: ' + JSON.stringify(body))
-                        return
-                    }
+                        if(!Array.isArray(body)) {
+                            console.log('Bitmex: Candle backfill error: ' + JSON.stringify(body));
+                            logger.error('Bitmex Candle backfill error: ' + JSON.stringify(body))
+                            return
+                        }
 
-                    let sticks = body.map(candle => {
-                        return new Candlestick(
-                            moment(candle['timestamp']).format('X'),
-                            candle['open'],
-                            candle['high'],
-                            candle['low'],
-                            candle['close'],
-                            candle['volume'],
-                        )
-                    })
+                        let candleSticks = body.map(candle => {
+                            return new Candlestick(
+                                moment(candle['timestamp']).format('X'),
+                                candle['open'],
+                                candle['high'],
+                                candle['low'],
+                                candle['close'],
+                                candle['volume'],
+                            )
+                        })
 
-                    eventEmitter.emit('candlestick', new CandlestickEvent(this.getName(), symbol['symbol'], period, sticks))
+                        await this.candleImporter.insertThrottledCandles(candleSticks.map(candle => {
+                            return ExchangeCandlestick.createFromCandle(this.getName(), symbol['symbol'], period, candle)
+                        }))
 
-                    // lets wait for settle down of database insert: per design we dont know when is was inserted to database
-                    setTimeout(() => {
                         if (resamples[symbol['symbol']] && resamples[symbol['symbol']][period] && resamples[symbol['symbol']][period].length > 0) {
-                            for (let periodTo of resamples[symbol['symbol']][period]) {
+                            resamples[symbol['symbol']][period].forEach(async periodTo => {
                                 let resampledCandles = resample.resampleMinutes(
-                                    sticks.slice(),
+                                    candleSticks.slice(),
                                     resample.convertPeriodToMinute(periodTo) // 15m > 15
                                 )
 
-                                eventEmitter.emit('candlestick', new CandlestickEvent(this.getName(), symbol['symbol'], periodTo, resampledCandles))
-                            }
+                                let candles = resampledCandles.map(candle => {
+                                    return ExchangeCandlestick.createFromCandle(this.getName(), symbol['symbol'], periodTo, candle)
+                                });
+
+                                await this.candleImporter.insertThrottledCandles(candles)
+                            })
                         }
-                    }, 1000);
+                    })
                 })
 
-                client.addStream(symbol['symbol'], 'tradeBin' + period, candles => {
+                // listen for new incoming candles
+                client.addStream(symbol['symbol'], 'tradeBin' + period, async candles => {
                     // we need a force reset; candles are like queue
                     let myCandles = candles.slice();
                     candles.length = 0
 
-                    let sticks = myCandles.map(candle => {
+                    let candleSticks = myCandles.map(candle => {
                         return new Candlestick(
                             moment(candle['timestamp']).format('X'),
                             candle['open'],
@@ -212,16 +222,15 @@ module.exports = class Bitmex {
                         );
                     });
 
-                    eventEmitter.emit('candlestick', new CandlestickEvent(this.getName(), symbol['symbol'], period, sticks));
+                    await this.candleImporter.insertThrottledCandles(candleSticks.map(candle => {
+                        return ExchangeCandlestick.createFromCandle(this.getName(), symbol['symbol'], period, candle)
+                    }))
 
-                    // lets wait for settle down of database insert: per design we dont know when is was inserted to database
-                    setTimeout(async () => {
-                        if (resamples[symbol['symbol']] && resamples[symbol['symbol']][period] && resamples[symbol['symbol']][period].length > 0) {
-                            for (let periodTo of resamples[symbol['symbol']][period]) {
-                                await me.candlestickResample.resample(this.getName(), symbol['symbol'], period, periodTo, true)
-                            }
-                        }
-                    }, 1000);
+                    if (resamples[symbol['symbol']] && resamples[symbol['symbol']][period] && resamples[symbol['symbol']][period].length > 0) {
+                        resamples[symbol['symbol']][period].forEach(async periodTo => {
+                            await me.candlestickResample.resample(this.getName(), symbol['symbol'], period, periodTo, true)
+                        })
+                    }
                 })
             })
 
@@ -410,17 +419,14 @@ module.exports = class Bitmex {
         return results
     }
 
-    getPositionForSymbol(symbol) {
-        return new Promise(async resolve => {
-            for (let position of (await this.getPositions())) {
-                if(position.symbol === symbol) {
-                    resolve(position)
-                    return
-                }
+    async getPositionForSymbol(symbol) {
+        for (let position of (await this.getPositions())) {
+            if(position.symbol === symbol) {
+                return position
             }
+        }
 
-            resolve()
-        })
+        return undefined
     }
 
     /**
@@ -450,6 +456,7 @@ module.exports = class Bitmex {
 
         // dont overwrite state closed order
         if (order.id in this.orders && ['done', 'canceled'].includes(this.orders[order.id].status)) {
+            delete this.orders[order.id]
             return
         }
 
@@ -949,11 +956,19 @@ module.exports = class Bitmex {
         return positions.filter((position) => {
             return position['isOpen'] === true
         }).map(position => {
+            // profit is calculated on ticker
+            // this fallback provide the exchange position value and "unleverage" it
+            let unrealisedRoePcnt = position['unrealisedRoePcnt'];
+
+            if (position['leverage'] && position['leverage'] > 1) {
+                unrealisedRoePcnt /= position['leverage']
+            }
+
             return new Position(
                 position['symbol'],
                 position['currentQty'] < 0 ? 'short' : 'long',
                 position['currentQty'],
-                position['unrealisedRoePcnt']  * 100,
+                parseFloat((unrealisedRoePcnt * 100).toFixed(2)),
                 new Date(),
                 position['avgEntryPrice'],
                 new Date(position['openingTimestamp'])
@@ -999,16 +1014,25 @@ module.exports = class Bitmex {
                 retry = true
             }
 
-            let ordType = order['ordType'].toLowerCase();
+            let ordType = order['ordType'].toLowerCase().replace(/[\W_]+/g,'');
 
             // secure the value
             let orderType = undefined
             switch (ordType) {
                 case 'limit':
-                    orderType = 'limit'
+                    orderType = ExchangeOrder.TYPE_LIMIT
                     break;
                 case 'stop':
-                    orderType = 'stop'
+                    orderType = ExchangeOrder.TYPE_STOP
+                    break;
+                case 'stoplimit':
+                    orderType = ExchangeOrder.TYPE_STOP_LIMIT
+                    break;
+                case 'market':
+                    orderType = ExchangeOrder.TYPE_MARKET
+                    break;
+                default:
+                    orderType = ExchangeOrder.TYPE_UNKNOWN
                     break;
             }
 

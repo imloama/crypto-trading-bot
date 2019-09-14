@@ -46,6 +46,17 @@ describe('#order dict test', function() {
         assert.equal(Order.createCloseOrderWithPriceAdjustment('BTCUSD', 12).side, 'long')
     })
 
+    it('test order close creation for closes', () => {
+        let order = Order.createCloseLimitPostOnlyReduceOrder('BTCUSD', -12, 0.4)
+
+        assert.equal(order.symbol,'BTCUSD')
+        assert.equal(order.price,-12)
+        assert.equal(order.amount,0.4)
+
+        assert.equal(order.side, 'short')
+        assert.deepEqual(order.options, { close: true, post_only: true })
+    })
+
     it('test market order', () => {
         let order = Order.createMarketOrder('BTCUSD', -12)
 
@@ -61,7 +72,36 @@ describe('#order dict test', function() {
     it('test retry order', () => {
         let order = Order.createRetryOrder(Order.createMarketOrder('BTCUSD', 12))
 
-        assert.equal(order.price > 0, true)
-        assert.equal(order.side, 'long')
+        assert.strictEqual(order.price > 0, true)
+        assert.strictEqual(order.side, 'long')
+        assert.strictEqual(order.amount, 12)
+    })
+
+    it('test retry order with amount [long]', () => {
+        let order = Order.createRetryOrder(Order.createMarketOrder('BTCUSD', 12), -16)
+
+        assert.strictEqual(order.price > 0, true)
+        assert.strictEqual(order.side, 'long')
+        assert.strictEqual(order.amount, 16)
+
+        order = Order.createRetryOrder(Order.createMarketOrder('BTCUSD', 12), 16)
+
+        assert.strictEqual(order.price > 0, true)
+        assert.strictEqual(order.side, 'long')
+        assert.strictEqual(order.amount, 16)
+    })
+
+    it('test retry order with amount [short]', () => {
+        let order = Order.createRetryOrder(Order.createMarketOrder('BTCUSD', -12), -16)
+
+        assert.strictEqual(order.price > 0, false)
+        assert.strictEqual(order.side, 'short')
+        assert.strictEqual(order.amount, -16)
+
+        order = Order.createRetryOrder(Order.createMarketOrder('BTCUSD', -12), 16)
+
+        assert.strictEqual(order.price > 0, false)
+        assert.strictEqual(order.side, 'short')
+        assert.strictEqual(order.amount, -16)
     })
 })

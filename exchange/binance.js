@@ -128,24 +128,25 @@ module.exports = class Binance {
         })
     }
 
-    order(order) {
-        return new Promise(async (resolve, reject) => {
-            let payload = Binance.createOrderBody(order)
-            let result = undefined
+    async order(order) {
+        let payload = Binance.createOrderBody(order)
+        let result = undefined
 
-            try {
-                result = await this.client.order(payload)
-            } catch (e) {
-                this.logger.error("Binance: order create error:" + e.message)
-                reject()
-                return
+        try {
+            result = await this.client.order(payload)
+        } catch (e) {
+            this.logger.error('Binance: order create error: ' + JSON.stringify(e.message, order, payload))
+
+            if(e.message && e.message.toLowerCase().includes('insufficient balance')) {
+                return ExchangeOrder.createRejectedFromOrder(order);
             }
 
-            let exchangeOrder = Binance.createOrders(result)[0]
+            return
+        }
 
-            this.triggerOrder(exchangeOrder)
-            resolve(exchangeOrder)
-        })
+        let exchangeOrder = Binance.createOrders(result)[0]
+        this.triggerOrder(exchangeOrder)
+        return exchangeOrder
     }
 
     async cancelOrder(id) {
@@ -228,21 +229,33 @@ module.exports = class Binance {
                 status = 'done'
             } else if (orderStatus === 'canceled') {
                 status = 'canceled'
-            } else if (orderStatus === 'rejected' || orderStatus === 'expired') {
+            } else if (orderStatus === 'rejected') {
+                status = 'rejected'
+                retry = false
+            } else if (orderStatus === 'expired') {
                 status = 'rejected'
                 retry = true
             }
 
-            let ordType = order['type'].toLowerCase();
+            let ordType = order['type'].toLowerCase().replace(/[\W_]+/g,'');
 
             // secure the value
             let orderType = undefined
             switch (ordType) {
                 case 'limit':
-                    orderType = 'limit'
+                    orderType = ExchangeOrder.TYPE_LIMIT
                     break;
-                case 'stop_loss':
-                    orderType = 'stop'
+                case 'stoploss':
+                    orderType = ExchangeOrder.TYPE_STOP
+                    break;
+                case 'stoplimit':
+                    orderType = ExchangeOrder.TYPE_STOP_LIMIT
+                    break;
+                case 'market':
+                    orderType = ExchangeOrder.TYPE_MARKET
+                    break;
+                default:
+                    orderType = ExchangeOrder.TYPE_UNKNOWN
                     break;
             }
 
@@ -275,6 +288,7 @@ module.exports = class Binance {
 
         // dont overwrite state closed order
         if (order.id in this.orders && ['done', 'canceled'].includes(this.orders[order.id].status)) {
+            delete this.orders[order.id]
             return
         }
 

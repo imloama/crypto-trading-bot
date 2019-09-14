@@ -332,8 +332,8 @@ describe('#binance exchange implementation', function() {
             'openOrders': async () => { throw 'Connection issue' }
         }
 
-        binance.triggerOrder(new ExchangeOrder('25035356', 'BTCUSDT', 'open', undefined, undefined, undefined, undefined, 'buy'))
-        binance.triggerOrder(new ExchangeOrder('foobar', 'ADAUSDT', 'open', undefined, undefined, undefined, undefined, 'buy'))
+        binance.triggerOrder(new ExchangeOrder('25035356', 'BTCUSDT', 'open', undefined, undefined, undefined, undefined, 'buy', ExchangeOrder.TYPE_LIMIT))
+        binance.triggerOrder(new ExchangeOrder('foobar', 'ADAUSDT', 'open', undefined, undefined, undefined, undefined, 'buy', ExchangeOrder.TYPE_LIMIT))
 
         assert.equal(Object.keys(binance.orders).length, 2)
         assert.equal(binance.orders[25035356].symbol, 'BTCUSDT')
@@ -369,8 +369,8 @@ describe('#binance exchange implementation', function() {
             'openOrders': async () => { throw 'Connection issue' }
         }
 
-        binance.triggerOrder(new ExchangeOrder('25035356', 'BTCUSDT', 'open', undefined, undefined, undefined, undefined, 'buy'))
-        binance.triggerOrder(new ExchangeOrder('foobar', 'ADAUSDT', 'open', undefined, undefined, undefined, undefined, 'buy'))
+        binance.triggerOrder(new ExchangeOrder('25035356', 'BTCUSDT', 'open', undefined, undefined, undefined, undefined, 'buy', ExchangeOrder.TYPE_LIMIT))
+        binance.triggerOrder(new ExchangeOrder('foobar', 'ADAUSDT', 'open', undefined, undefined, undefined, undefined, 'buy', ExchangeOrder.TYPE_LIMIT))
 
         assert.equal(Object.keys(binance.orders).length, 2)
         assert.equal(binance.orders[25035356].symbol, 'BTCUSDT')
@@ -405,6 +405,27 @@ describe('#binance exchange implementation', function() {
 
         assert.equal(balances.find(balance => balance.asset === 'TNT').available > 0.1, true)
         assert.equal(balances.find(balance => balance.asset === 'TNT').locked > 1, true)
+    })
+
+    it('test placing order on balance issue', async () => {
+        let binance = new Binance(
+            undefined,
+            {
+                'error': () => {}
+            }
+        )
+
+        binance.client = {
+            'order': () => {throw new Error('Account has insufficient balance for requested action');}
+        }
+
+        let order = await binance.order(Order.createMarketOrder('FOOBAR', 12))
+
+        assert.strictEqual(order.retry, false)
+        assert.strictEqual(order.status, 'rejected')
+        assert.strictEqual(order.symbol, 'FOOBAR')
+        assert.strictEqual(order.amount, 12)
+        assert.strictEqual(order.type, 'market')
     })
 
     let getEvent = function(find) {

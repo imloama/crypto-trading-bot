@@ -1,5 +1,7 @@
 {% extends './layout.html.twig' %}
 
+{% block title %}Pairs | Crypto Bot{% endblock %}
+
 {% block content %}
     <div class="container-fluid">
         <div class="table-responsive">
@@ -21,7 +23,7 @@
                 {% for pair in pairs %}
                     <tr>
                         <td style="white-space: nowrap">{{ pair.exchange }}</td>
-                        <td style="white-space: nowrap">{{ pair.symbol }}</td>
+                        <td style="white-space: nowrap"><a target="blank" href="/tradingview/{{ pair.exchange }}:{{ pair.symbol }}">{{ pair.symbol }}</td>
                         <td>{{ pair.state }}</td>
                         <td><strong>{{ pair.capital }}</strong></td>
                         <td class="text-muted"><span class="span-md">{{ pair.strategies|json_encode }}</span></td>
@@ -47,6 +49,7 @@
 
                                     {% if pair.has_position|default(false) and not pair.process %}
                                         <button name="action" value="close" data-toggle="tooltip" title="Limit Close" class="btn btn-dark btn-sm"><i class="fas fa-window-close"></i> Close</button>
+                                        <button name="action" value="close_market" data-toggle="tooltip" title="Market Close" class="btn btn-dark btn-sm"><i class="fas fa-window-close"></i></button>
                                     {% endif %}
 
                                     {% if pair.process|default %}

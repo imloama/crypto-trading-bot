@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <title>Crypto-Bot</title>
+    <title>{% block title %}Dashboard | Crypto Bot{% endblock %}</title>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <link rel="icon" href="/favicon.ico"/>
@@ -64,11 +64,25 @@
                 <a class="nav-link" href="{{ '/pairs' }}">Pairs</a>
             </li>
             <li class="nav-item">
-                <a class="nav-link" href="{{ '/tools/candles' }}">Candle Export</a>
+                <a class="nav-link" href="{{ '/tools/candles' }}">Candles</a>
             </li>
             <li class="nav-item">
                 <a class="nav-link" href="{{ '/logs' }}">Logs</a>
             </li>
+
+            {% set desks = desks() %}
+            {% if desks|length > 0 %}
+                <li class="nav-item dropdown">
+                    <a class="nav-link dropdown-toggle" href="#" id="navbarDropdown" role="button" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
+                        Desks
+                    </a>
+                    <div class="dropdown-menu" aria-labelledby="navbarDropdown">
+                        {% for desk in desks %}
+                            <a class="dropdown-item" href="/desks/{{ loop.index - 1 }}">{{ desk }}</a>
+                        {% endfor %}
+                    </div>
+                </li>
+            {% endif %}
         </ul>
     </div>
 </nav>
